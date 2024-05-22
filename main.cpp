@@ -254,37 +254,70 @@ bool* threshold_response(long long* r_arr, int width, int height, long long thre
     // kombinacja liniowa pikselów o response > threshold dla każdego sąsiedztwa n_dim*n_dim prostokątów równej wielkości z obrazka to corner
     int x_step = int(width / n_dim);
     int y_step = int(height / n_dim);
+    // printf("x_step: %d\ny_step: %d", x_step, y_step);
 
     std::vector<corner> corners;
 
-    for (y = 0; y <= height - y_step; y+= y_step){
-        for (x=0; x <= width - x_step; x+= x_step){
-            long long x_mean = 0;
-            long long y_mean = 0;
-            long long sum_weights = 0;
-            long long sum_response = 0;
-            #pragma omp parallel for default(shared) collapse(2) reduction(+:sum_weights, x_mean, y_mean, sum_response) private(x1, y1, r)
-            for (y1 = y; y1 < y + y_step; y1++){
-                for (x1 = x; x1 < x + x_step; x1++){
-                    r = r_arr[y1*width + x1];
-                    if (threshold < r){
-                        sum_response += r;
-                        sum_weights += (r / threshold);
-                        x_mean += (r / threshold) * x1;
-                        y_mean += (r / threshold) * y1;
+    if(x_step * y_step > 200){ // poniżej nieoptymalnie
+        for (y = 0; y <= height - y_step; y+= y_step){
+            for (x=0; x <= width - x_step; x+= x_step){
+                long long x_mean = 0;
+                long long y_mean = 0;
+                long long sum_weights = 0;
+                long long sum_response = 0;
+                #pragma omp parallel for default(shared) collapse(2) reduction(+:sum_weights, x_mean, y_mean, sum_response) private(x1, y1, r)
+                for (y1 = y; y1 < y + y_step; y1++){
+                    for (x1 = x; x1 < x + x_step; x1++){
+                        r = r_arr[y1*width + x1];
+                        if (threshold < r){
+                            sum_response += r;
+                            sum_weights += (r / threshold);
+                            x_mean += (r / threshold) * x1;
+                            y_mean += (r / threshold) * y1;
+                        }
                     }
-                }
-            } 
-            if (sum_weights != 0){               
-                int corner_x = x_mean / sum_weights;
-                int corner_y = y_mean / sum_weights;
-                corner c;
-                c.index = corner_y*width + corner_x;
-                c.value = sum_response;
-                corners.push_back(c);
-            }           
+                } 
+                if (sum_weights != 0){               
+                    int corner_x = x_mean / sum_weights;
+                    int corner_y = y_mean / sum_weights;
+                    corner c;
+                    c.index = corner_y*width + corner_x;
+                    c.value = sum_response;
+                    corners.push_back(c);
+                }           
+            }
+        }
+    } else {
+        for (y = 0; y <= height - y_step; y+= y_step){
+            for (x=0; x <= width - x_step; x+= x_step){
+                long long x_mean = 0;
+                long long y_mean = 0;
+                long long sum_weights = 0;
+                long long sum_response = 0;
+                for (y1 = y; y1 < y + y_step; y1++){
+                    for (x1 = x; x1 < x + x_step; x1++){
+                        r = r_arr[y1*width + x1];
+                        if (threshold < r){
+                            sum_response += r;
+                            sum_weights += (r / threshold);
+                            x_mean += (r / threshold) * x1;
+                            y_mean += (r / threshold) * y1;
+                        }
+                    }
+                } 
+                if (sum_weights != 0){               
+                    int corner_x = x_mean / sum_weights;
+                    int corner_y = y_mean / sum_weights;
+                    corner c;
+                    c.index = corner_y*width + corner_x;
+                    c.value = sum_response;
+                    corners.push_back(c);
+                }           
+            }
         }
     }
+
+
 
     // leave max_corners corners with highest sum of values
     std::sort(corners.begin(), corners.end(), compare_corner);
@@ -365,26 +398,30 @@ void detect_corners_seq(const char* img_path, long long threshold, int n_dim, fl
     // printf("derivatives\n");
     i_arr = compute_derivatives(img_grayscale, width, height); // ixix iyiy ixiy - products of derivatives ix, iy(results of sobel operators gx, gy)
 
+    long long sum = 0;
     // printf("gaussian\n");
     for (i = 0; i < 3; i++){
         long int* img_gaussian = gaussian_filter(i_arr[i], width, height); // gaussian filter for ixix iyiy ixiy
         delete[] i_arr[i];
         i_arr[i] = img_gaussian;
+        // for (int j =0; j < width * height; j++) if (i_arr[i][j] != 0) printf("%ld \n", i_arr[i][j]);
+        for (int j =0; j < width * height; j++) if (i == 1)sum+= i_arr[i][j];
+
     }
     // printf("before response\n");
-
+printf(" %lld\n", sum);
     long long int* r_arr = pixel_response(i_arr, width, height, k); // response function (k constant <0.04-0.06>)
     
     // printf("after response\n");
 
     bool* t_arr = threshold_response(r_arr, width, height, threshold, n_dim, max_corners); // which points on img are corners
 
-    // for (int y = 0; y < height; y++){ // print corners coords
-    //     for (int x=0; x < width; x++){
-    //         if (t_arr[y * width + x] == true)
-    //             printf("(%d, %d)\n", x, y);
-    //     }
-    // }
+    for (int y = 0; y < height; y++){ // print corners coords
+        for (int x=0; x < width; x++){
+            if (t_arr[y * width + x] == true)
+                printf("(%d, %d)\n", x, y);
+        }
+    }
 
     // printf("coloring\n");
     color_corners(img, width, height, t_arr, channels, cross_size);
