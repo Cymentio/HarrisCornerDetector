@@ -162,63 +162,6 @@ bool compare_corner(const corner &a, const corner &b)
     return a.value > b.value;
 }
 
-bool* threshold_response(long long* r_arr, int width, int height, long long threshold, int n_dim, int max_corners){ // 1 if value above threshold 0 if below for each pixel
-    // (2*n_dim + 1) * (2*n_dim + 1) window (neighborhood), only if center pixel is has the highest value in neghborhood it can give 1 as response
-    // n_dim - how many pixel from center to each side is neighborhood
-    int arr_size = width * height;
-    bool* t_arr = new bool[arr_size];
-    for (int i = 0; i < arr_size; i++){
-        t_arr[i] = false;
-    }
-    int x, y, y1, x1;
-    long long r;
-
-    // kombinacja liniowa pikselów o response > threshold dla każdego sąsiedztwa n_dim*n_dim prostokątów równej wielkości z obrazka to corner
-    int x_step = int(width / n_dim);
-    int y_step = int(height / n_dim);
-
-    std::vector<corner> corners;
-
-    for (y = 0; y <= height - y_step; y+= y_step){
-        for (x=0; x <= width - x_step; x+= x_step){
-            long long x_mean = 0;
-            long long y_mean = 0;
-            long long sum_weights = 0;
-            long long sum_response = 0;
-            for (y1 = y; y1 < y + y_step; y1++){
-                // #pragma omp parallel for default(shared) reduction(+:sum_weights, x_mean, y_mean, sum_response) private(x1, r)
-                for (x1 = x; x1 < x + x_step; x1++){
-                    r = r_arr[y1*width + x1];
-                    if (threshold < r){
-                        sum_response += r;
-                        sum_weights += (r / threshold);
-                        x_mean += (r / threshold) * x1;
-                        y_mean += (r / threshold) * y1;
-                    }
-                }
-            } 
-            if (sum_weights != 0){               
-                int corner_x = x_mean / sum_weights;
-                int corner_y = y_mean / sum_weights;
-                corner c;
-                c.index = corner_y*width + corner_x;
-                c.value = sum_response;
-                corners.push_back(c);
-            }           
-        }
-    }
-
-    // leave max_corners corners with highest sum of values
-    std::sort(corners.begin(), corners.end(), compare_corner);
-    if(corners.size()>=max_corners) 
-    corners.resize(max_corners);
-    for (auto c: corners){
-        t_arr[c.index] = true;
-    }
-
-    return t_arr;
-}
-
 __global__ void threshold_parallel(long long* r_arr, int width, int height, int n, int step_x, int step_y, long long threshold, int n_dim, long long int* t_arr, long long int* corner_arr){ // 1 if value above threshold 0 if below for each pixel
     // (2*n_dim + 1) * (2*n_dim + 1) window (neighborhood), only if center pixel is has the highest value in neghborhood it can give 1 as response
     // n_dim - how many pixel from center to each side is neighborhood
@@ -426,7 +369,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     int pad_size = 1;
     int* img_padded = reflection_padding(img_grayscale, width, height, pad_size);  // nieopłacalne na cuda
     int* dev_padded;
-    // // printf("padded\n");
+    // printf("padded\n");
     
     // printf("derivatives\n");
     int n_pad = (width + 2*pad_size)*(height + 2*pad_size);
@@ -446,6 +389,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
             i_arr[i][j] = i_arr2[i * n + j];
         }
     }
+    delete[] i_arr2;
     
     // printf("gaussian\n");
     int mask[25] = {
@@ -532,7 +476,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     cudaFree(dev_corner);
     bool * tb_arr = new bool[n];  // which points on img are corners
     for (int i = 0; i<n; i++) tb_arr[i] = false;
-    // leave only max_corners corners
+    // leave max_corners corners with highest sum of values
     std::vector<corner> corners;
     for (int e = 0; e < grid_size; e++){ 
         if (corner_arr[e] != 0){
@@ -544,6 +488,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
             corners.push_back(c);
         }
     }
+
     std::sort(corners.begin(), corners.end(), compare_corner);
     if(corners.size()>=max_corners) corners.resize(max_corners);
     for (std::vector<corner>::iterator it=corners.begin();it!=corners.end();it++){
@@ -552,7 +497,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
 
     // printf("coloring\n");
 
-    color_corners(img, width, height, tb_arr, channels, cross_size);
+    color_corners(img, width, height, tb_arr, channels, cross_size); // nieopłacalne na cuda
     for (int i = 0; i < 3; i++){
         delete[] i_arr[i];
     }
@@ -561,6 +506,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     delete[] r_arr;
     delete[] t_arr;
     delete[] tb_arr;
+    delete[] corner_arr;
 
     end = std::chrono::system_clock::now();
     std::chrono::duration<double> computation_time = end - start;

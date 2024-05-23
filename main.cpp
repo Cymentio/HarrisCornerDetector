@@ -254,7 +254,6 @@ bool* threshold_response(long long* r_arr, int width, int height, long long thre
     // kombinacja liniowa pikselów o response > threshold dla każdego sąsiedztwa n_dim*n_dim prostokątów równej wielkości z obrazka to corner
     int x_step = int(width / n_dim);
     int y_step = int(height / n_dim);
-    // printf("x_step: %d\ny_step: %d", x_step, y_step);
 
     std::vector<corner> corners;
 
@@ -316,8 +315,6 @@ bool* threshold_response(long long* r_arr, int width, int height, long long thre
             }
         }
     }
-
-
 
     // leave max_corners corners with highest sum of values
     std::sort(corners.begin(), corners.end(), compare_corner);
@@ -403,24 +400,20 @@ void detect_corners_seq(const char* img_path, long long threshold, int n_dim, fl
         long int* img_gaussian = gaussian_filter(i_arr[i], width, height); // gaussian filter for ixix iyiy ixiy
         delete[] i_arr[i];
         i_arr[i] = img_gaussian;
-        // for (int j =0; j < width * height; j++) if (i_arr[i][j] != 0) printf("%ld \n", i_arr[i][j]);
-        for (int j =0; j < width * height; j++) if (i == 1)sum+= i_arr[i][j];
-
     }
     // printf("before response\n");
-printf(" %lld\n", sum);
     long long int* r_arr = pixel_response(i_arr, width, height, k); // response function (k constant <0.04-0.06>)
     
     // printf("after response\n");
 
     bool* t_arr = threshold_response(r_arr, width, height, threshold, n_dim, max_corners); // which points on img are corners
 
-    for (int y = 0; y < height; y++){ // print corners coords
-        for (int x=0; x < width; x++){
-            if (t_arr[y * width + x] == true)
-                printf("(%d, %d)\n", x, y);
-        }
-    }
+    // for (int y = 0; y < height; y++){ // print corners coords
+    //     for (int x=0; x < width; x++){
+    //         if (t_arr[y * width + x] == true)
+    //             printf("(%d, %d)\n", x, y);
+    //     }
+    // }
 
     // printf("coloring\n");
     color_corners(img, width, height, t_arr, channels, cross_size);
