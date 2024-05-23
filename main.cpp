@@ -321,8 +321,7 @@ bool* threshold_response(long long* r_arr, int width, int height, long long thre
 
     // leave max_corners corners with highest sum of values
     std::sort(corners.begin(), corners.end(), compare_corner);
-    if(corners.size()>=max_corners) 
-    corners.resize(max_corners);
+    if(corners.size()>=max_corners) corners.resize(max_corners);
     for (auto c: corners){
         t_arr[c.index] = true;
     }

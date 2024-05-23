@@ -19,24 +19,6 @@ __constant__ int cgx[9];
 __constant__ int cgy[9];
 __constant__ int cm[4];
 
-int* img_to_grayscale(unsigned char* img, int width, int height, int channels){
-    int* img_grayscale = new int[width*height];
-    int i;
-
-    if (channels == 1) {
-        // # pragma omp parallel for private(i)
-        for(i=0; i< width*height; i++)
-            img_grayscale[i] = img[i];
-        return img_grayscale;
-    }
-    // # pragma omp parallel for private(i)
-    for (i=0; i<height*width;i++){
-        img_grayscale[i] = img[i * channels] * 0.299 + img[i * channels + 1] * 0.587 + img[i * channels+2] * 0.114;
-    }
-
-    return img_grayscale;
-}
-
 __global__ void grayscale_parallel(int n, int channels, int * img_grayscale, unsigned char * img){
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     if (i < n) {
@@ -44,20 +26,8 @@ __global__ void grayscale_parallel(int n, int channels, int * img_grayscale, uns
         else {
             img_grayscale[i] = img[i * channels] * 0.299 + img[i * channels + 1] * 0.587 + img[i * channels+2] * 0.114;
         }
-        // i += blockDim.x * gridDim.x;
     }
     return;
-}
-
-long int gaussian_value(long int* img, int width, int y, int x, int mask[], int mask_size, int half_mask){
-    long long int result = 0;
-    int x1, y1;
-    for(y1 = 0; y1 < mask_size; y1++){
-        for(x1 = 0; x1 < mask_size; x1++){
-            result += mask[y1 * mask_size + x1] * img[(y + y1) * (width + mask_size - 1) + (x + x1)];
-        }
-    }
-    return (long int) result / 273;
 }
 
 __device__ long int dev_gaussian_value(long int* img, int width, int y, int x, int mask[], int mask_size, int half_mask, int n_pad, int idy){
@@ -126,20 +96,6 @@ long int* reflection_padding(long int* img, int width, int height, int padding_s
     return img_padded;
 }
 
-
-int operator_value(int* img, int width, int y, int x, int mask[], int mask_size, int half_mask){
-    int result = 0;
-    int y1, x1;
-
-    for(y1 = 0; y1 < mask_size; y1++){
-        for(x1 = 0; x1 < mask_size; x1++){
-            result += mask[y1 * mask_size + x1] * img[(y + y1) * (width + mask_size - 1) + (x + x1)];
-        }
-    }
-
-    return result;
-}
-
 __device__ int dev_operator_value(int* img, int width, int y, int x, int mask[9], int mask_size){
     int result = 0;
     int y1, x1;
@@ -151,103 +107,6 @@ __device__ int dev_operator_value(int* img, int width, int y, int x, int mask[9]
     }
 
     return result;
-}
-
-__global__ void global_operator_value(int* img, int width, int y, int x, int mask[], const int mask_size, int n, int* result){
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int y1 = i / mask_size;
-    int x1 = i % mask_size;
-    if (i < n) {
-        result[i] = mask[y1 * mask_size + x1] * img[(y + y1) * (width + mask_size - 1) + (x + x1)];
-    }
-
-    return;
-}
-
-__global__ void reduce_val(int* result, int n, int* reduce_array){
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    for(int s = 1; s < n; s*=2){
-        if (i < n && i % (2*s) == 0) {
-        reduce_array[i] += result[i + s];
-        }
-        __syncthreads();
-    }
-
-    return;
-}
-
-void operator_values(int* img, int width, int y, int x, int mask_x[], int mask_y[], int mask_size, int half_mask, int* ix, int* iy){
-    int result_x = 0, result_y = 0;
-    int y1, x1;
-
-    for(y1 = 0; y1 < mask_size; y1++){
-        for(x1 = 0; x1 < mask_size; x1++){
-            result_x += mask_x[y1 * mask_size + x1] * img[(y + y1) * (width + mask_size - 1) + (x + x1)];
-            result_y += mask_y[y1 * mask_size + x1] * img[(y + y1) * (width + mask_size - 1) + (x + x1)];
-        }
-    }
-
-    ix[y * width + x] = result_x;
-    iy[y * width + x] = result_y;
-    return;
-}
-
-// does convolution on image using sobel operators and returns products of derivatives (sobel operator results)
-long int** compute_derivatives(int* img, int width, int height){ 
-    int* ix = new int[width * height];
-    int* iy = new int[width * height];
-    int x, y, i;
-    // Sobel operators
-    int gx[9] = {
-        1, 0, -1,
-        2, 0, -2,
-        1, 0, -1
-    };
-    int gy[9] = {
-        1, 2, 1,
-        0, 0, 0,
-        -1, -2, -1
-    };
-
-    // printf("padding\n");
-    int* img_padded = reflection_padding(img, width, height, 1);
-    // printf("padded\n");
-
-    long int** i_arr = new long int*[3]; // ixix iyiy ixiy
-
-    // #pragma omp parallel private(x, y, i) shared(height, width, gx, gy, i_arr, ix, iy)
-    // {
-        // #pragma omp for
-        for (y = 0; y < height; y++){
-            for (x=0; x < width; x++){
-                // operator_values(img_padded, width, y, x, gx, gy, 3, 1, ix, iy); // ix iy
-                ix[y * width + x] = operator_value(img_padded, width, y, x, gx, 3, 1); // ix
-                iy[y * width + x] = operator_value(img_padded, width, y, x, gy, 3, 1); // iy
-            }
-        }
-
-        // #pragma omp single
-        {
-        for (i = 0; i < 3; i++){
-                    i_arr[i] = new long int[width * height];
-            }
-        }
-        // #pragma omp barrier
-
-        // #pragma omp for
-        for (y = 0; y < height; y++){
-            for (x=0; x < width; x++){ // after loop above
-                i_arr[0][y * width + x] = ix[y * width + x] * ix[y * width + x]; // ixix
-                i_arr[1][y * width + x] = iy[y * width + x] * iy[y * width + x]; // iyiy
-                i_arr[2][y * width + x] = ix[y * width + x] * iy[y * width + x]; // ixiy
-            }
-        }
-    // }
-    delete[] ix;
-    delete[] iy;
-
-    delete[] img_padded;
-    return i_arr;
 }
 
 // // does convolution on image using sobel operators and returns products of derivatives (sobel operator results)
@@ -262,33 +121,9 @@ __global__ void derivatives_parallel(int* img, int width, int height, int n, lon
         i_arr[y * width + x] = ix * ix; // ixix
         i_arr[y * width + x + 1 * n] = iy * iy; // iyiy
         i_arr[y * width + x + 2 * n] = ix * iy; // ixiy
-        // i += blockDim.x * gridDim.x;
     }
 
     return;
-}
-
-long int* gaussian_filter(long int* img, int width, int height){ // does convolution on image using mask
-    int x, y;
-
-    int mask[25] = {
-        1,  4,  7,  4, 1,
-        4, 16, 26, 16, 4,
-        7, 26, 41, 26, 7,
-        4, 16, 26, 16, 4,
-        1,  4,  7,  4, 1
-    };
-    long int* img_padded = reflection_padding(img, width, height, 2);
-    long int* img_gaussian = new long int[width*height];
-    // # pragma omp parallel for private(y, x)
-    for (y = 0; y < height; y++){
-        for (x = 0; x < width; x++){
-            img_gaussian[y * width + x] = gaussian_value(img_padded, width, y, x, mask, 5, 2);
-        }
-    }
-
-    delete[] img_padded;
-    return img_gaussian;
 }
 
 __global__ void gaussian_parallel(long int* img, int width, int height, int n, int n_pad, int mask[25], long int *img_gaussian){ // does convolution on image using mask
@@ -298,39 +133,9 @@ __global__ void gaussian_parallel(long int* img, int width, int height, int n, i
         x = i % width;
         y = i / width;
         img_gaussian[i + n * blockIdx.y] = dev_gaussian_value(img, width, y, x, cmask, 5, 2, n_pad, blockIdx.y);
-        // i += blockDim.x * gridDim.x;
     }
-    // # pragma omp parallel for private(y, x)
-    // for (y = 0; y < height; y++){
-    //     for (x = 0; x < width; x++){
-    //         // img_gaussian[y * width + x] = gaussian_value(img_padded, width, y, x, mask, 5, 2);
-    //     }
-    // }
 
     return;
-}
-
-long long int* pixel_response(long int** i_arr, int width, int height, float k){ // 1 if det(M) - k*tr(M)^2 above threshold 0 if below for each pixel
-    // k - constant <0.04-0.06>
-    // n_dim * n_dim window (neighborhood), only if center pixel is has the highest value in neghborhood it can give 1 as response
-    int m[4] = {
-        0, 2, // ixix ixiy
-        2, 1  // ixiy iyiy
-    };
-    long long int* r_arr = new long long int[width*height];
-    int x, y;
-    long long det, tr;
-
-    // #pragma omp parallel for shared(height, width, i_arr, r_arr) private(y, x, det, tr)
-    for (y = 0; y < height; y++){
-        for (x=0; x < width; x++){
-            det = i_arr[m[0]][y * width + x] * i_arr[m[3]][y * width + x] - i_arr[m[1]][y * width + x] * i_arr[m[2]][y * width + x];
-            tr = i_arr[m[0]][y * width + x] + i_arr[m[3]][y * width + x];
-            r_arr[y * width + x] = (long long) (det - k * tr * tr);             
-        }
-    }
-
-    return r_arr;
 }
 
 __global__ void pixel_response_parallel(long int* i_arr, int width, int height, int n, float k, long long int* r_arr){ // 1 if det(M) - k*tr(M)^2 above threshold 0 if below for each pixel
@@ -339,9 +144,9 @@ __global__ void pixel_response_parallel(long int* i_arr, int width, int height, 
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     if (i < n) {
         long long det, tr;
-        det = i_arr[i] * i_arr[n + i] - i_arr[2 * n + i] * i_arr[2 * n + i];
-        tr = i_arr[i] + i_arr[n + i];
-        r_arr[i] = (long long) (det - k * tr * tr);             
+        det = i_arr[cm[0] * n + i] * i_arr[cm[3] * n + i] - i_arr[cm[1] * n + i] * i_arr[cm[2] * n + i];
+        tr = i_arr[cm[0] * n + i] + i_arr[cm[3] * n + i];
+        r_arr[i] = (long long) (det - k * tr * tr);          
     }
 
     return;
@@ -414,11 +219,89 @@ bool* threshold_response(long long* r_arr, int width, int height, long long thre
     return t_arr;
 }
 
+__global__ void threshold_parallel(long long* r_arr, int width, int height, int n, int step_x, int step_y, long long threshold, int n_dim, long long int* t_arr, long long int* corner_arr){ // 1 if value above threshold 0 if below for each pixel
+    // (2*n_dim + 1) * (2*n_dim + 1) window (neighborhood), only if center pixel is has the highest value in neghborhood it can give 1 as response
+    // n_dim - how many pixel from center to each side is neighborhood
+    int tid = threadIdx.x;
+    int block_start_x = blockIdx.x * step_x;
+    int block_start_y = blockIdx.y * step_y;
+    int thread_x;
+    int thread_y;
+    int size = step_x * step_y;
+    long long r;
+    while (tid < size) { // wyliczenie wartości
+        thread_x = tid % step_x;
+        thread_y = tid / step_x;
+        if (thread_x + block_start_x < width && thread_y + block_start_y < height){
+            int i = (thread_x + block_start_x) + (thread_y + block_start_y) * width;
+            r = r_arr[i];
+            if (threshold < r){
+                t_arr[i] = 10 * r / threshold; // sum_weights
+                t_arr[i + n] = 10 * r / threshold * (thread_x + block_start_x); // sum x coord * weight
+                t_arr[i + n * 2] = 10 * r / threshold * (thread_y + block_start_y); // sum y coord  * weight
+            } else {
+                r_arr[i] = 0;
+                t_arr[i] = 0;
+                t_arr[i + n] = 0;
+                t_arr[i + n * 2] = 0;
+            }
+        }
+        tid += THREADS_PER_BLOCK;
+    }
+    __syncthreads();
+    for (int j = 1; j < size; j*=2){ // redukcja
+        tid = threadIdx.x;
+        while (tid < size) {
+            thread_x = tid % step_x;
+            thread_y = tid / step_x;
+            if (thread_x + block_start_x < width && thread_y + block_start_y < height){
+                int i = (thread_x + block_start_x) + (thread_y + block_start_y) * width;
+                if (tid % (2*j) == 0){ // co 2, 4, 8 zlicza sumę swoją i z oddalonym o j
+                    int tid2 = tid + j;
+                    if (tid2 >= size) {
+                        tid += THREADS_PER_BLOCK;
+                        continue;
+                    }
+                    thread_x = tid2 % step_x;
+                    thread_y = tid2 / step_x;
+                    if (thread_x + block_start_x < width && thread_y + block_start_y < height) {
+                        int i2 = (thread_x + block_start_x) + (thread_y + block_start_y) * width;
+                        t_arr[i] += t_arr[i2]; // sum weights
+                        r_arr[i] += r_arr[i2]; // sum responses
+                        t_arr[i + n] += t_arr[i2 + n]; // sum x coord * weight
+                        t_arr[i + n * 2] += t_arr[i2 + n * 2]; // sum y coord * weight
+                    }
+                    
+                }
+            }
+            tid += THREADS_PER_BLOCK;
+        }
+        __syncthreads();
+    }
+    tid = threadIdx.x;
+    if (tid == 0){
+        int i = block_start_x + block_start_y * width;
+        int i2 = blockIdx.x + blockIdx.y * gridDim.x; // do mniejszej tablicy niż t_arr
+        int corner_x, corner_y;
+        if (t_arr[i] != 0){ // corner exists in block
+            corner_x = t_arr[i + n] / t_arr[i];
+            corner_y = t_arr[i + n * 2] / t_arr[i];
+        } else {
+            corner_x = 0;
+            corner_y = 0;
+        }
+        corner_arr[i2] = r_arr[i]; // value
+        corner_arr[i2 + gridDim.x * gridDim.y] = corner_x; // x coord
+        corner_arr[i2 + gridDim.x * gridDim.y * 2] = corner_y; // y coord
+    }
+
+    return;
+}
+
 void color_corners(unsigned char* img, int width, int height, bool* t_arr, int channels, int corner_size){ 
     // adds red crosses to corners
     int x, y;
 
-    // #pragma omp parallel for
     for (y = 0; y < height; y++){
         for (x=0; x < width; x++){
             if (t_arr[y * width + x] == true){ // if corner add cross
@@ -452,86 +335,40 @@ void color_corners(unsigned char* img, int width, int height, bool* t_arr, int c
     }
 }
 
-void detect_corners_seq(const char* img_path, long long threshold, int n_dim, float k, int max_corners, int cross_size){
-    std::chrono::time_point <std::chrono::system_clock> start, end;
-    int width, height, channels;
-    int i;
-    int* img_grayscale;
-    long int** i_arr;
-    printf("start sequential\n");
-    printf("%s\n", img_path);
-    unsigned char* img = stbi_load(img_path, &width, &height, &channels, 3);
-
-    if(img == NULL) {
-         printf("Error in loading the image\n");
-         exit(1);
+__global__ void color_parallel(unsigned char* img, int width, int height, int n, int channels, int corner_size, bool* t_arr){ 
+    // adds red crosses to corners
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int y = i / n;
+    int x = i % n;
+    if (i < n && t_arr[i] == true) {
+        if (channels == 1) { // if grayscale black corners
+            for(int i= -corner_size; i <= corner_size; i++){                    
+                    int index1 = (y + i) * width + x;
+                    int index2 = y  * width + (x + i);
+                    if (index1 >= 0 && index1 < width * height) // pixel in img borders
+                        img[index1] = 255;
+                    if (index2 >= 0 && index2 < width * height) // pixel in img borders
+                        img[index2] = 255;
+                }                  
+        } else {
+            for(int i= -corner_size; i <= corner_size; i++){ // 3 channels
+                int index1 = (y + i) * width + x;
+                int index2 = y  * width + (x + i);
+                if (index1 >= 0 && index1 < width * height){ // pixel in img borders
+                    img[index1 * channels] = 255; // red
+                    img[index1 * channels + 1] = 0; // green
+                    img[index1 * channels + 2] = 0; // blue
+                }
+                if (index2 >= 0 && index2 < width * height){ // pixel in img borders
+                    img[index2 * channels] = 255; // red
+                    img[index2 * channels + 1] = 0; // green
+                    img[index2 * channels + 2] = 0; // blue
+                }
+            }
+        }
+            
     }
-    printf("Loaded image with a width of %dpx, a height of %dpx and %d channels\n", width, height, channels);
-    if(channels != 3 && channels != 1 && channels != 4) {
-         printf("img not rgb or grayscale\n");
-         exit(1);
-    }
-    if (channels == 4)
-        channels = 3;
-    start = std::chrono::system_clock::now();
 
-
-    // printf("grayscale\n");
-    img_grayscale = img_to_grayscale(img, width, height, channels); // compute grayscale from img
-
-    // printf("derivatives\n");
-    i_arr = compute_derivatives(img_grayscale, width, height); // ixix iyiy ixiy - products of derivatives ix, iy(results of sobel operators gx, gy)
-
-    // printf("gaussian\n");
-    for (i = 0; i < 3; i++){
-        long int* img_gaussian = gaussian_filter(i_arr[i], width, height); // gaussian filter for ixix iyiy ixiy
-        delete[] i_arr[i];
-        i_arr[i] = img_gaussian;
-    }
-    // printf("before response\n");
-
-    long long int* r_arr = pixel_response(i_arr, width, height, k); // response function (k constant <0.04-0.06>)
-    
-    // printf("after response\n");
-
-    bool* t_arr = threshold_response(r_arr, width, height, threshold, n_dim, max_corners); // which points on img are corners
-
-    // for (int y = 0; y < height; y++){ // print corners coords
-    //     for (int x=0; x < width; x++){
-    //         if (t_arr[y * width + x] == true)
-    //             printf("(%d, %d)\n", x, y);
-    //     }
-    // }
-
-    // printf("coloring\n");
-    color_corners(img, width, height, t_arr, channels, cross_size);
-    for (i = 0; i < 3; i++){
-        delete[] i_arr[i];
-    }
-    delete[] i_arr;
-    delete[] r_arr;
-    delete[] t_arr;
-
-    end = std::chrono::system_clock::now();
-    std::chrono::duration<double> computation_time = end - start;
-    printf("computation time: %lf seconds\n", computation_time.count());
-    printf("finished\n");
-
-    // stbi_write_png("1.png", width, height, 1, img_grayscale, width);
-    stbi_write_png("2.png", width, height, channels, img, width * channels);
-    delete[] img_grayscale;
-    
-    stbi_image_free(img);
-    return;
-}
-
-__global__ void test(int n){
-    int index = threadIdx.x + blockIdx.x * blockDim.x;
-    while (index < n) {
-        if(index < n) printf("i: %d\n", index);
-        index += blockDim.x * gridDim.x;
-    }
-    return;
 }
 
 __host__ void detect_corners_par(const char* img_path, long long threshold, int n_dim, float k, int max_corners, int cross_size){
@@ -558,27 +395,16 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     start = std::chrono::system_clock::now();
     // printf("grayscale\n");
     int num_blocks = ceil( 1.0*(width * height) / THREADS_PER_BLOCK );
-    printf("num_blocks: %d", num_blocks);
-    long long sum = 0;
+    long long sum;
     img_grayscale = new int[width * height];
     int n = width * height;
     cudaMalloc((void**) &dev_grayscale, n * sizeof(int));
     cudaMalloc((void**) &dev_img, channels * n * sizeof(unsigned char));
     cudaMemcpy(dev_img, img, channels * n * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    grayscale_parallel<<<num_blocks, THREADS_PER_BLOCK>>>(n, channels, dev_grayscale, dev_img);
+    grayscale_parallel<<<num_blocks, THREADS_PER_BLOCK>>>(n, channels, dev_grayscale, dev_img); // compute grayscale from img
     cudaMemcpy(img_grayscale, dev_grayscale, n * sizeof(int), cudaMemcpyDeviceToHost);
-    // cudaFree(dev_grayscale);
     cudaFree(dev_img);
     
-
-
-    int * img_grayscale2 = img_to_grayscale(img, width, height, channels); // compute grayscale from img
-// for (int i =n-1;i>0;i--){
-//     if (img_grayscale2[i] != img_grayscale[i])
-//     printf("%d: %d vs %d\n",i, img_grayscale[i], img_grayscale2[i]);
-//     sum+=img_grayscale[i];
-// }
-    // printf(" %lld\n", sum);
     // Sobel operators
     const int gx[9] = {
         1, 0, -1,
@@ -604,15 +430,15 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     
     // printf("derivatives\n");
     int n_pad = (width + 2*pad_size)*(height + 2*pad_size);
-    // for (int i = 0; i< n_pad; i++)  printf("%ld ", img_padded[i]);
     cudaMalloc((void**) &dev_padded, n_pad * sizeof(int));
     cudaMemcpy(dev_padded, img_padded,  n_pad * sizeof(int), cudaMemcpyHostToDevice);
-    derivatives_parallel<<<num_blocks, THREADS_PER_BLOCK>>>(dev_grayscale, width, height, n, dev_arr, gx, gy, dev_padded);
+    derivatives_parallel<<<num_blocks, THREADS_PER_BLOCK>>>(dev_grayscale, width, height, n, dev_arr, gx, gy, dev_padded); // ixix iyiy ixiy - products of derivatives ix, iy(results of sobel operators gx, gy)
     cudaMemcpy(i_arr2, dev_arr, 3 * n * sizeof(long int), cudaMemcpyDeviceToHost);
     cudaFree(dev_padded);
     cudaFree(dev_grayscale);
 
     cudaFree(dev_arr);
+    delete [] img_padded;
     i_arr = new long int*[3];
     for (int i = 0; i< 3; i++){
         i_arr[i] = new long int[n]; 
@@ -620,17 +446,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
             i_arr[i][j] = i_arr2[i * n + j];
         }
     }
-
-
-    long int **i_arr3 = compute_derivatives(img_grayscale2, width, height); // ixix iyiy ixiy - products of derivatives ix, iy(results of sobel operators gx, gy)
     
-    for (int i = 0; i< 3; i++){
-        i_arr[i] = new long int[n]; 
-        for (int j = 0; j< n; j++){
-            i_arr[i][j] = i_arr2[i * n + j];
-        }
-    }
-    delete[] img_grayscale2;
     // printf("gaussian\n");
     int mask[25] = {
         1,  4,  7,  4, 1,
@@ -640,14 +456,6 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
         1,  4,  7,  4, 1
     };
     cudaMemcpyToSymbol(cmask, mask, 25 * sizeof(int));
-    sum = 0;
-    for (int i = 0; i < 3; i++){
-        long int* img_gaussian = gaussian_filter(i_arr3[i], width, height); // gaussian filter for ixix iyiy ixiy
-        delete[] i_arr3[i];
-        i_arr3[i] = img_gaussian;
-        
-        // for (int j =0; j < width * height; j++) if (i == 1)sum+= i_arr[i][j];
-    }
     pad_size = 2;
     n_pad = (width + 2*pad_size)*(height + 2*pad_size);
     long int * dev_gaussian, * dev_padded2;
@@ -666,6 +474,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
         }
     }
     dim3 blockDim(num_blocks, 3);
+    
     cudaMemcpy(dev_padded2, padded, 3 * n_pad * sizeof(long int), cudaMemcpyHostToDevice);
     gaussian_parallel<<<blockDim, THREADS_PER_BLOCK>>>(dev_padded2, width, height, n, n_pad, mask, dev_gaussian);
     cudaMemcpy(gaussian, dev_gaussian, 3 * n * sizeof(long int), cudaMemcpyDeviceToHost);
@@ -676,16 +485,12 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
         i_arr[i] = new long int[n]; 
         for (int j = 0; j< n; j++){
             i_arr[i][j] = gaussian[i * n + j];
-            if(i==1)sum+= i_arr[i][j];
-            if (i_arr[i][j] != i_arr3[i][j]) printf("%d,%d: %ld vs %ld\n",i, j, i_arr[i][j], i_arr3[i][j]);
         } 
     }
     cudaFree(dev_padded2);
-
     delete[] padded;
     delete[] gaussian;
 
-    printf(" %lld\n", sum);
     // printf("before response\n");
 
     int m[4] = {
@@ -700,32 +505,62 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     cudaMalloc((void**) &dev_r_arr, n * sizeof(long long int));
     
 
-    // long long int* r_arr = pixel_response(i_arr, width, height, k); // response function (k constant <0.04-0.06>)
     pixel_response_parallel<<<num_blocks, THREADS_PER_BLOCK>>>(dev_gaussian, width, height, n, k, dev_r_arr); // response function (k constant <0.04-0.06>)
     cudaMemcpy(r_arr, dev_r_arr, n * sizeof(long long int), cudaMemcpyDeviceToHost);
 
-    for (int i = 0; i< 3; i++) delete[] i_arr3[i];
-    delete[] i_arr3;
     cudaFree(dev_gaussian);
-    cudaFree(dev_r_arr);
     // printf("after response\n");
-    bool* t_arr = threshold_response(r_arr, width, height, threshold, n_dim, max_corners); // which points on img are corners
+    long long int *dev_t_arr, *t_arr, *dev_corner, *corner_arr;
+    t_arr = new long long int[3*n];
+    cudaMalloc((void**) &dev_t_arr, 3 * n * sizeof(long long int));
 
-    // for (int y = 0; y < height; y++){ // print corners coords
-    //     for (int x=0; x < width; x++){
-    //         if (t_arr[y * width + x] == true)
-    //             printf("(%d, %d)\n", x, y);
-    //     }
-    // }
+    // kombinacja liniowa pikselów o response > threshold dla każdego sąsiedztwa n_dim*n_dim prostokątów równej wielkości z obrazka to corner
+    int x_step = ceil(1.0 * width / n_dim);
+    int y_step = ceil(1.0 * height / n_dim);
+    int grid_size = ceil(1.0 * width/x_step) * ceil(1.0 * height/y_step);
+    corner_arr = new long long int[3 * grid_size];
+    cudaMalloc((void**) &dev_corner, 3 * grid_size * sizeof(long long int));
+
+    dim3 t_dim(ceil(1.0 * width/x_step), ceil(1.0 * height/y_step));
+    threshold_parallel<<<t_dim, THREADS_PER_BLOCK>>>(dev_r_arr, width, height, n, x_step, y_step, threshold, n_dim, dev_t_arr, dev_corner);
+
+    cudaMemcpy(t_arr, dev_t_arr, 3 * n * sizeof(long long int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(corner_arr, dev_corner, 3 * grid_size * sizeof(long long int), cudaMemcpyDeviceToHost);
+
+    cudaFree(dev_r_arr);
+    cudaFree(dev_t_arr);
+    cudaFree(dev_corner);
+    bool * tb_arr = new bool[n];  // which points on img are corners
+    for (int i = 0; i<n; i++) tb_arr[i] = false;
+    // leave only max_corners corners
+    std::vector<corner> corners;
+    for (int e = 0; e < grid_size; e++){ 
+        if (corner_arr[e] != 0){
+            int x = corner_arr[e + grid_size];
+            int y = corner_arr[e + grid_size * 2];
+            corner c;
+            c.index = x + y * width;
+            c.value = corner_arr[e];
+            corners.push_back(c);
+        }
+    }
+    std::sort(corners.begin(), corners.end(), compare_corner);
+    if(corners.size()>=max_corners) corners.resize(max_corners);
+    for (std::vector<corner>::iterator it=corners.begin();it!=corners.end();it++){
+        tb_arr[(*it).index] = true;
+    }
 
     // printf("coloring\n");
-    color_corners(img, width, height, t_arr, channels, cross_size);
+
+    color_corners(img, width, height, tb_arr, channels, cross_size);
     for (int i = 0; i < 3; i++){
         delete[] i_arr[i];
     }
+
     delete[] i_arr;
     delete[] r_arr;
     delete[] t_arr;
+    delete[] tb_arr;
 
     end = std::chrono::system_clock::now();
     std::chrono::duration<double> computation_time = end - start;
@@ -764,6 +599,5 @@ int main(int argc, char* argv[]) {
     }
     
     detect_corners_par(argv[1], atoll(argv[2]), atoi(argv[3]), k, max_corners, cross_size);
-    // detect_corners_seq(argv[1], atoll(argv[2]), atoi(argv[3]), k, max_corners, cross_size);
     return 0;
 }
