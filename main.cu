@@ -21,10 +21,11 @@ __constant__ int cm[4];
 
 __global__ void grayscale_parallel(int n, int channels, int * img_grayscale, unsigned char * img){
     int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int temp = i * channels;
     if (i < n) {
         if(channels == 1) img_grayscale[i] = img[i];
         else {
-            img_grayscale[i] = img[i * channels] * 0.299 + img[i * channels + 1] * 0.587 + img[i * channels+2] * 0.114;
+            img_grayscale[i] = img[temp] * 0.299 + img[temp + 1] * 0.587 + img[temp+2] * 0.114;
         }
     }
     return;
@@ -43,9 +44,12 @@ __device__ long int dev_gaussian_value(long int* img, int width, int y, int x, i
 
 // reflection padding because zero padding (constant value padding) can add corners to image borders
 int* reflection_padding(int* img, int width, int height, int padding_size){ // padding_size - increase of width and height in pixels (both sides): (mask_dim - 1) / 2
-    int* img_padded = new int[(width + 2*padding_size)*(height + 2*padding_size)]; // img will be reflection padded
+    int new_h, new_w;
+    new_h = height + 2 * padding_size;
+    new_w = width + 2 * padding_size;
+    int* img_padded = new int[new_w*new_h]; // img will be reflection padded
 
-    for (int y=0; y < height + 2*padding_size; y++){
+    for (int y=0; y < new_h; y++){
         int y_diff = 0;
         if (y < padding_size){
             y_diff = (padding_size - y) * 2; // [hp = padding_size/2] 0 (-hp original) -> hp + 1 (hp - 1 in original); hp - 1 (-1 original) -> hp (0 in original)
@@ -53,15 +57,15 @@ int* reflection_padding(int* img, int width, int height, int padding_size){ // p
         if (y >= height + padding_size){
             y_diff = (height + padding_size - 1 - y) * 2;
         }
-        for (int x=0; x < width + 2*padding_size; x++){
+        for (int x=0; x < new_w; x++){
             int x_diff = 0;
-            if (x < padding_size){ // skipped variable for x_diff
+            if (x < padding_size){
                 x_diff = (padding_size - x) * 2;
             }
             if (x >= width + padding_size){
                 x_diff = (width + padding_size - 1 - x) * 2;
             }
-            img_padded[y * (width + 2 * padding_size) + x] = img[(y - padding_size + y_diff) * width + x - padding_size + x_diff]; // n + 2 -> n in original for y and x
+            img_padded[y * (new_w) + x] = img[(y - padding_size + y_diff) * width + x - padding_size + x_diff]; // n + 2 -> n in original for y and x
         }
     }
 
@@ -70,10 +74,12 @@ int* reflection_padding(int* img, int width, int height, int padding_size){ // p
 
 // long int version
 long int* reflection_padding(long int* img, int width, int height, int padding_size){ // adding_size - increase of width and height in pixels (both sides) (mask_dim - 1) / 2
-    long int* img_padded = new long int[(width + 2*padding_size)*(height + 2*padding_size)]; // img will be reflection padded
-    int y, x;
+    int new_h, new_w;
+    new_h = height + 2 * padding_size;
+    new_w = width + 2 * padding_size;
+    long int* img_padded = new long int[new_w*new_h]; // img will be reflection padded
 
-    for (y=0; y < height + 2*padding_size; y++){
+    for (int y=0; y < new_h; y++){
         int y_diff = 0;
         if (y < padding_size){
             y_diff = (padding_size - y) * 2; // [hp = padding_size/2] 0 (-hp original) -> hp + 1 (hp - 1 in original); hp - 1 (-1 original) -> hp (0 in original)
@@ -81,15 +87,15 @@ long int* reflection_padding(long int* img, int width, int height, int padding_s
         if (y >= height + padding_size){
             y_diff = (height + padding_size - 1 - y) * 2;
         }
-        for (x=0; x < width + 2*padding_size; x++){
+        for (int x=0; x < new_w; x++){
             int x_diff = 0;
-            if (x < padding_size){ // skipped variable for x_diff
+            if (x < padding_size){
                 x_diff = (padding_size - x) * 2;
             }
             if (x >= width + padding_size){
                 x_diff = (width + padding_size - 1 - x) * 2;
             }
-            img_padded[y * (width + 2 * padding_size) + x] = img[(y - padding_size + y_diff) * width + x - padding_size + x_diff]; // n + 2 -> n in original for y and x
+            img_padded[y * (new_w) + x] = img[(y - padding_size + y_diff) * width + x - padding_size + x_diff]; // n + 2 -> n in original for y and x
         }
     }
 
@@ -110,23 +116,24 @@ __device__ int dev_operator_value(int* img, int width, int y, int x, int mask[9]
 }
 
 // // does convolution on image using sobel operators and returns products of derivatives (sobel operator results)
-__global__ void derivatives_parallel(int* img, int width, int height, int n, long int* i_arr, const int gx[9], const int gy[9], int * img_padded){ 
-    int ix, iy, x, y;
+__global__ void derivatives_parallel(int* img, int width, int n, long int* i_arr, const int gx[9], const int gy[9], int * img_padded){ 
+    int ix, iy, x, y, temp;
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     if (i < n) {
         x = i % width;
         y = i / width;
         ix = dev_operator_value(img_padded, width, y, x, cgx, 3); // ix
         iy = dev_operator_value(img_padded, width, y, x, cgy, 3); // iy
-        i_arr[y * width + x] = ix * ix; // ixix
-        i_arr[y * width + x + 1 * n] = iy * iy; // iyiy
-        i_arr[y * width + x + 2 * n] = ix * iy; // ixiy
+        temp = y * width + x;
+        i_arr[temp] = ix * ix; // ixix
+        i_arr[temp + 1 * n] = iy * iy; // iyiy
+        i_arr[temp + 2 * n] = ix * iy; // ixiy
     }
 
     return;
 }
 
-__global__ void gaussian_parallel(long int* img, int width, int height, int n, int n_pad, int mask[25], long int *img_gaussian){ // does convolution on image using mask
+__global__ void gaussian_parallel(long int* img, int width, int n, int n_pad, int mask[25], long int *img_gaussian){ // does convolution on image using mask
     int x, y;
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     if (i < n) {
@@ -138,9 +145,8 @@ __global__ void gaussian_parallel(long int* img, int width, int height, int n, i
     return;
 }
 
-__global__ void pixel_response_parallel(long int* i_arr, int width, int height, int n, float k, long long int* r_arr){ // 1 if det(M) - k*tr(M)^2 above threshold 0 if below for each pixel
+__global__ void pixel_response_parallel(long int* i_arr, int n, float k, long long int* r_arr){ // 1 if det(M) - k*tr(M)^2 above threshold 0 if below for each pixel
     // k - constant <0.04-0.06>
-    // n_dim * n_dim window (neighborhood), only if center pixel is has the highest value in neghborhood it can give 1 as response
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     if (i < n) {
         long long det, tr;
@@ -162,26 +168,28 @@ bool compare_corner(const corner &a, const corner &b)
     return a.value > b.value;
 }
 
-__global__ void threshold_parallel(long long* r_arr, int width, int height, int n, int step_x, int step_y, long long threshold, int n_dim, long long int* t_arr, long long int* corner_arr){ // 1 if value above threshold 0 if below for each pixel
-    // (2*n_dim + 1) * (2*n_dim + 1) window (neighborhood), only if center pixel is has the highest value in neghborhood it can give 1 as response
-    // n_dim - how many pixel from center to each side is neighborhood
+__global__ void threshold_parallel(long long* r_arr, int width, int height, int n, int step_x, int step_y, long long threshold, long long int* t_arr, long long int* corner_arr){ // 1 if value above threshold 0 if below for each pixel
+    // zwróć kombinację liniową współrzędnych pikseli o r (funkcja odpowiedzi) > threshold (wagi to r / threshold) jako jedyny narożnik z sąsiedztwa
+    // step_x * step_y okno (sąsiedztwo)
     int tid = threadIdx.x;
     int block_start_x = blockIdx.x * step_x;
     int block_start_y = blockIdx.y * step_y;
-    int thread_x;
-    int thread_y;
+    int thread_x, thread_y, x, y, temp;
     int size = step_x * step_y;
     long long r;
     while (tid < size) { // wyliczenie wartości
         thread_x = tid % step_x;
         thread_y = tid / step_x;
-        if (thread_x + block_start_x < width && thread_y + block_start_y < height){
-            int i = (thread_x + block_start_x) + (thread_y + block_start_y) * width;
+        x = thread_x + block_start_x;
+        y = thread_y + block_start_y;
+        if (x < width && y < height){
+            int i = x + y * width;
             r = r_arr[i];
             if (threshold < r){
-                t_arr[i] = 10 * r / threshold; // sum_weights
-                t_arr[i + n] = 10 * r / threshold * (thread_x + block_start_x); // sum x coord * weight
-                t_arr[i + n * 2] = 10 * r / threshold * (thread_y + block_start_y); // sum y coord  * weight
+                temp = r / threshold;
+                t_arr[i] = temp; // sum_weights
+                t_arr[i + n] = temp * x; // sum x coord * weight
+                t_arr[i + n * 2] = temp * y; // sum y coord  * weight
             } else {
                 r_arr[i] = 0;
                 t_arr[i] = 0;
@@ -197,8 +205,10 @@ __global__ void threshold_parallel(long long* r_arr, int width, int height, int 
         while (tid < size) {
             thread_x = tid % step_x;
             thread_y = tid / step_x;
-            if (thread_x + block_start_x < width && thread_y + block_start_y < height){
-                int i = (thread_x + block_start_x) + (thread_y + block_start_y) * width;
+            x = thread_x + block_start_x;
+            y = thread_y + block_start_y;
+            if (x < width && y < height){
+                int i = x + y * width;
                 if (tid % (2*j) == 0){ // co 2, 4, 8 zlicza sumę swoją i z oddalonym o j
                     int tid2 = tid + j;
                     if (tid2 >= size) {
@@ -207,8 +217,10 @@ __global__ void threshold_parallel(long long* r_arr, int width, int height, int 
                     }
                     thread_x = tid2 % step_x;
                     thread_y = tid2 / step_x;
-                    if (thread_x + block_start_x < width && thread_y + block_start_y < height) {
-                        int i2 = (thread_x + block_start_x) + (thread_y + block_start_y) * width;
+                    x = thread_x + block_start_x;
+                    y = thread_y + block_start_y;
+                    if (x < width && y < height) {
+                        int i2 = x + y * width;
                         t_arr[i] += t_arr[i2]; // sum weights
                         r_arr[i] += r_arr[i2]; // sum responses
                         t_arr[i + n] += t_arr[i2 + n]; // sum x coord * weight
@@ -233,9 +245,10 @@ __global__ void threshold_parallel(long long* r_arr, int width, int height, int 
             corner_x = 0;
             corner_y = 0;
         }
+        temp = gridDim.x * gridDim.y;
         corner_arr[i2] = r_arr[i]; // value
-        corner_arr[i2 + gridDim.x * gridDim.y] = corner_x; // x coord
-        corner_arr[i2 + gridDim.x * gridDim.y * 2] = corner_y; // y coord
+        corner_arr[i2 + temp] = corner_x; // x coord
+        corner_arr[i2 + temp * 2] = corner_y; // y coord
     }
 
     return;
@@ -243,75 +256,43 @@ __global__ void threshold_parallel(long long* r_arr, int width, int height, int 
 
 void color_corners(unsigned char* img, int width, int height, bool* t_arr, int channels, int corner_size){ 
     // adds red crosses to corners
-    int x, y;
+    int i, x, y, temp, temp2, index1, index2;
+    int n = width * height;
 
     for (y = 0; y < height; y++){
         for (x=0; x < width; x++){
-            if (t_arr[y * width + x] == true){ // if corner add cross
-                if (channels == 1) { // if grayscale black corners
-                    for(int i= -corner_size; i <= corner_size; i++){
-                        int index1 = (y + i) * width + x;
-                        int index2 = y  * width + (x + i);
-                        if (index1 >= 0 && index1 < width * height) // pixel in img borders
+            temp = y * width;
+            if (t_arr[temp + x] == true){ // if corner add cross
+                if (channels == 1) { // if greyscale black corners
+                    for(i= -corner_size; i <= corner_size; i++){
+                        index1 = temp + i * width + x;
+                        index2 = temp + (x + i);
+                        if (index1 >= 0 && index1 < n) // pixel in img borders
                             img[index1] = 255;
-                        if (index2 >= 0 && index2 < width * height) // pixel in img borders
+                        if (index2 >= 0 && index2 < n) // pixel in img borders
                             img[index2] = 255;
                     }
                     continue;                    
                 }
-                for(int i= -corner_size; i <= corner_size; i++){ // 3 channels
-                    int index1 = (y + i) * width + x;
-                    int index2 = y  * width + (x + i);
-                    if (index1 >= 0 && index1 < width * height){ // pixel in img borders
-                        img[index1 * channels] = 255; // red
-                        img[index1 * channels + 1] = 0; // green
-                        img[index1 * channels + 2] = 0; // blue
+                for(i= -corner_size; i <= corner_size; i++){ // 3 channels
+                    index1 = (y + i) * width + x;
+                    index2 = y * width + (x + i);
+                    if (index1 >= 0 && index1 < n){ // pixel in img borders
+                        temp2 = index1 * channels;
+                        img[temp2] = 255; // red
+                        img[temp2 + 1] = 0; // green
+                        img[temp2 + 2] = 0; // blue
                     }
-                    if (index2 >= 0 && index2 < width * height){ // pixel in img borders
-                        img[index2 * channels] = 255; // red
-                        img[index2 * channels + 1] = 0; // green
-                        img[index2 * channels + 2] = 0; // blue
+                    if (index2 >= 0 && index2 < n){ // pixel in img borders
+                        temp2 = index2 * channels;
+                        img[temp2] = 255; // red
+                        img[temp2 + 1] = 0; // green
+                        img[temp2 + 2] = 0; // blue
                     }
                 }
             }
         }
     }
-}
-
-__global__ void color_parallel(unsigned char* img, int width, int height, int n, int channels, int corner_size, bool* t_arr){ 
-    // adds red crosses to corners
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int y = i / n;
-    int x = i % n;
-    if (i < n && t_arr[i] == true) {
-        if (channels == 1) { // if grayscale black corners
-            for(int i= -corner_size; i <= corner_size; i++){                    
-                    int index1 = (y + i) * width + x;
-                    int index2 = y  * width + (x + i);
-                    if (index1 >= 0 && index1 < width * height) // pixel in img borders
-                        img[index1] = 255;
-                    if (index2 >= 0 && index2 < width * height) // pixel in img borders
-                        img[index2] = 255;
-                }                  
-        } else {
-            for(int i= -corner_size; i <= corner_size; i++){ // 3 channels
-                int index1 = (y + i) * width + x;
-                int index2 = y  * width + (x + i);
-                if (index1 >= 0 && index1 < width * height){ // pixel in img borders
-                    img[index1 * channels] = 255; // red
-                    img[index1 * channels + 1] = 0; // green
-                    img[index1 * channels + 2] = 0; // blue
-                }
-                if (index2 >= 0 && index2 < width * height){ // pixel in img borders
-                    img[index2 * channels] = 255; // red
-                    img[index2 * channels + 1] = 0; // green
-                    img[index2 * channels + 2] = 0; // blue
-                }
-            }
-        }
-            
-    }
-
 }
 
 __host__ void detect_corners_par(const char* img_path, long long threshold, int n_dim, float k, int max_corners, int cross_size){
@@ -319,8 +300,8 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     int width, height, channels;
     int * img_grayscale, * dev_grayscale;
     long int** i_arr;
-    printf("start cuda\n");
-    printf("%s\n", img_path);
+    // printf("start cuda\n");
+    // printf("%s\n", img_path);
     unsigned char* img = stbi_load(img_path, &width, &height, &channels, 3);
     unsigned char* dev_img;
 
@@ -328,7 +309,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
          printf("Error in loading the image\n");
          exit(1);
     }
-    printf("Loaded image with a width of %dpx, a height of %dpx and %d channels\n", width, height, channels);
+    // printf("Loaded image with a width of %dpx, a height of %dpx and %d channels\n", width, height, channels);
     if(channels != 3 && channels != 1 && channels != 4) {
          printf("img not rgb or grayscale\n");
          exit(1);
@@ -337,10 +318,10 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
         channels = 3;
     start = std::chrono::system_clock::now();
     // printf("grayscale\n");
-    int num_blocks = ceil( 1.0*(width * height) / THREADS_PER_BLOCK );
-    long long sum;
-    img_grayscale = new int[width * height];
     int n = width * height;
+    int num_blocks = ceil( 1.0*n / THREADS_PER_BLOCK );
+    long long sum;
+    img_grayscale = new int[n];
     cudaMalloc((void**) &dev_grayscale, n * sizeof(int));
     cudaMalloc((void**) &dev_img, channels * n * sizeof(unsigned char));
     cudaMemcpy(dev_img, img, channels * n * sizeof(unsigned char), cudaMemcpyHostToDevice);
@@ -375,7 +356,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     int n_pad = (width + 2*pad_size)*(height + 2*pad_size);
     cudaMalloc((void**) &dev_padded, n_pad * sizeof(int));
     cudaMemcpy(dev_padded, img_padded,  n_pad * sizeof(int), cudaMemcpyHostToDevice);
-    derivatives_parallel<<<num_blocks, THREADS_PER_BLOCK>>>(dev_grayscale, width, height, n, dev_arr, gx, gy, dev_padded); // ixix iyiy ixiy - products of derivatives ix, iy(results of sobel operators gx, gy)
+    derivatives_parallel<<<num_blocks, THREADS_PER_BLOCK>>>(dev_grayscale, width, n, dev_arr, gx, gy, dev_padded); // ixix iyiy ixiy - products of derivatives ix, iy(results of sobel operators gx, gy)
     cudaMemcpy(i_arr2, dev_arr, 3 * n * sizeof(long int), cudaMemcpyDeviceToHost);
     cudaFree(dev_padded);
     cudaFree(dev_grayscale);
@@ -413,22 +394,24 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
         i_arr[i] = img_padded;
     }
     for (int i = 0; i < 3; i++){
+        int temp = i * n_pad;
         for (int j = 0; j < n_pad; j++){
-            padded[i * n_pad + j] = i_arr[i][j];
+            padded[temp + j] = i_arr[i][j];
         }
     }
     dim3 blockDim(num_blocks, 3);
     
     cudaMemcpy(dev_padded2, padded, 3 * n_pad * sizeof(long int), cudaMemcpyHostToDevice);
-    gaussian_parallel<<<blockDim, THREADS_PER_BLOCK>>>(dev_padded2, width, height, n, n_pad, mask, dev_gaussian);
+    gaussian_parallel<<<blockDim, THREADS_PER_BLOCK>>>(dev_padded2, width, n, n_pad, mask, dev_gaussian);
     cudaMemcpy(gaussian, dev_gaussian, 3 * n * sizeof(long int), cudaMemcpyDeviceToHost);
 
     sum = 0;
     for (int i = 0; i < 3; i++){
+        int temp = i * n;
         delete[] i_arr[i];
         i_arr[i] = new long int[n]; 
         for (int j = 0; j< n; j++){
-            i_arr[i][j] = gaussian[i * n + j];
+            i_arr[i][j] = gaussian[temp + j];
         } 
     }
     cudaFree(dev_padded2);
@@ -449,7 +432,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     cudaMalloc((void**) &dev_r_arr, n * sizeof(long long int));
     
 
-    pixel_response_parallel<<<num_blocks, THREADS_PER_BLOCK>>>(dev_gaussian, width, height, n, k, dev_r_arr); // response function (k constant <0.04-0.06>)
+    pixel_response_parallel<<<num_blocks, THREADS_PER_BLOCK>>>(dev_gaussian, n, k, dev_r_arr); // response function (k constant <0.04-0.06>)
     cudaMemcpy(r_arr, dev_r_arr, n * sizeof(long long int), cudaMemcpyDeviceToHost);
 
     cudaFree(dev_gaussian);
@@ -458,7 +441,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     t_arr = new long long int[3*n];
     cudaMalloc((void**) &dev_t_arr, 3 * n * sizeof(long long int));
 
-    // kombinacja liniowa pikselów o response > threshold dla każdego sąsiedztwa n_dim*n_dim prostokątów równej wielkości z obrazka to corner
+    // kombinacja liniowa pikselów o response > threshold dla każdego sąsiedztwa n_dim*n_dim prostokątów równej wielkości z obrazka to narożnik
     int x_step = ceil(1.0 * width / n_dim);
     int y_step = ceil(1.0 * height / n_dim);
     int grid_size = ceil(1.0 * width/x_step) * ceil(1.0 * height/y_step);
@@ -466,7 +449,7 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     cudaMalloc((void**) &dev_corner, 3 * grid_size * sizeof(long long int));
 
     dim3 t_dim(ceil(1.0 * width/x_step), ceil(1.0 * height/y_step));
-    threshold_parallel<<<t_dim, THREADS_PER_BLOCK>>>(dev_r_arr, width, height, n, x_step, y_step, threshold, n_dim, dev_t_arr, dev_corner);
+    threshold_parallel<<<t_dim, THREADS_PER_BLOCK>>>(dev_r_arr, width, height, n, x_step, y_step, threshold, dev_t_arr, dev_corner);
 
     cudaMemcpy(t_arr, dev_t_arr, 3 * n * sizeof(long long int), cudaMemcpyDeviceToHost);
     cudaMemcpy(corner_arr, dev_corner, 3 * grid_size * sizeof(long long int), cudaMemcpyDeviceToHost);
@@ -511,11 +494,12 @@ __host__ void detect_corners_par(const char* img_path, long long threshold, int 
     end = std::chrono::system_clock::now();
     std::chrono::duration<double> computation_time = end - start;
     printf("computation time: %lf seconds\n", computation_time.count());
-    printf("finished\n");
+    // printf("finished\n");
 
     // for(int i = 0; i< width * height; i++)
     //     img[i] = img_grayscale[i];
     // stbi_write_png("1.png", width, height, 1, img, width);
+    printf("saving img...\n");
     stbi_write_png("3.png", width, height, channels, img, width * channels);
     delete[] img_grayscale;
     
@@ -527,18 +511,18 @@ int main(int argc, char* argv[]) {
     float k = 0.04;
     int max_corners = INT_MAX, cross_size = 3;
     if (argc >= 4 && argc <= 7) {
-        printf("img: %s\n", argv[1]); // 1 - nazwa wejściowego obrazu 2 - threshold 3 - n_dim (defines size of window where can only be 1 corner); optional:  4  - k (constant), 5 - max corner count, 7 - cross_size (red crossed in saved picture)
-        printf("threshold: %s\n", argv[2]); // 1 000 000 000 - limit in most cases
-        printf("n_dim: %s\n", argv[3]);
+        // printf("img: %s\n", argv[1]); // 1 - nazwa wejściowego obrazu 2 - threshold 3 - n_dim (defines size of window where can only be 1 corner); optional:  4  - k (constant), 5 - max corner count, 7 - cross_size (red crossed in saved picture)
+        // printf("threshold: %s\n", argv[2]); // 1 000 000 000 - limit in most cases
+        // printf("n_dim: %s\n", argv[3]);
         if (argc >= 5)
             k = atof(argv[4]);
         if (argc >= 6)
             max_corners = atoi(argv[5]);
         if (argc >= 7)
             cross_size = atoi(argv[6]);
-        printf("k: %f\n", k); // <0.4; 0.6>
-        printf("max_corners: %d\n", max_corners);
-        printf("cross_size: %d\n", cross_size); // best 3 per 500 width/height
+        // printf("k: %f\n", k); // <0.4; 0.6>
+        // printf("max_corners: %d\n", max_corners);
+        // printf("cross_size: %d\n", cross_size); // best 3 per 500 width/height
     } else {
         printf("podaj poprawna liczbe argumentow\n");
         exit(1);
